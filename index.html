@@ -473,7 +473,7 @@ function drawBitmap(art, ox, oy, color){
 }
 
 function draw(){
-  if(S.screen==="title")   return drawTitle();
+  if(S.screen==="title")   return startTitle();   // animated; runs its own loop
   if(S.screen==="ending")  return drawEnding();
 
   const room = rooms[S.room];
@@ -568,25 +568,133 @@ function wrap(text, maxW){
   return lines;
 }
 
-function drawTitle(){
-  ctx.fillStyle = "#0c1410"; ctx.fillRect(0,0,512,512);
-  // faint We/They map motif
-  ctx.fillStyle = "rgba(70,120,80,.18)";  ctx.fillRect(40,120,180,260);
-  ctx.fillStyle = "rgba(150,90,110,.16)"; ctx.fillRect(300,150,150,210);
+/* ----- animated title loop ----- */
+let _rafId = null, _t0 = null;
+function startTitle(){
+  if(_rafId !== null) return;       // already running
+  _t0 = null;
+  _rafId = requestAnimationFrame(titleLoop);
+}
+function stopTitle(){
+  if(_rafId !== null){ cancelAnimationFrame(_rafId); _rafId = null; }
+}
+function titleLoop(ts){
+  if(S.screen !== "title"){ _rafId = null; return; }
+  if(_t0 === null) _t0 = ts;
+  drawTitle((ts - _t0)/1000);
+  _rafId = requestAnimationFrame(titleLoop);
+}
 
-  ctx.textAlign="center";
-  ctx.fillStyle="#dff0df"; ctx.font="bold 40px 'Courier New',monospace";
-  ctx.fillText("LET'S GET", 256, 210);
-  ctx.fillText("TOGETHER", 256, 256);
-  ctx.fillStyle="#9bb6a0"; ctx.font="15px 'Courier New',monospace";
-  ctx.fillText("a Bitsy-inspired game after Isaac Asimov (1957)", 256, 300);
-  ctx.fillStyle="#cfe0cf"; ctx.font="16px 'Courier New',monospace";
-  ctx.fillText("You are Elias Lynn, Chief of the Bureau of Robotics.", 256, 360);
-  ctx.fillText("Ten humanoids walk among Us. Find them.", 256, 384);
-  ctx.fillStyle = ((Date.now()/600|0)%2) ? "#8df0a0" : "#3a5a44";
-  ctx.font="18px 'Courier New',monospace";
-  ctx.fillText("press Z / Space to begin", 256, 440);
-  ctx.textAlign="left";
+function miniPerson(cx, cy, scale, color, alpha){
+  ctx.globalAlpha = alpha; ctx.fillStyle = color;
+  const art = ART.person, ox = cx - 4*scale, oy = cy - 4*scale;
+  for(let r=0;r<8;r++){ const row=art[r];
+    for(let c=0;c<8;c++){ if(row[c]==='#') ctx.fillRect((ox+c*scale)|0,(oy+r*scale)|0,scale,scale); } }
+  ctx.globalAlpha = 1;
+}
+
+function drawTitle(t){
+  const W=512, H=512, cx=256, cy=178;
+
+  // --- cycle timing: ten humanoids swirl inward, reach critical mass, flash, reset ---
+  const P = 6.0;                       // cycle length (s)
+  const lt = t % P;                    // time within cycle
+  const moveDur = P*0.78;
+  const p = Math.min(lt/moveDur, 1);   // convergence 0..1
+  const ease = p*p*(3-2*p);            // smoothstep
+  const flashStart = moveDur, flashPeak = moveDur+0.14, flashEnd = moveDur+0.55;
+  let flash = 0;
+  if(lt>=flashStart && lt<flashEnd){
+    flash = lt<flashPeak ? (lt-flashStart)/(flashPeak-flashStart)
+                         : 1-(lt-flashPeak)/(flashEnd-flashPeak);
+    flash = Math.max(0, Math.min(1, flash));
+  }
+  const intro = Math.min(t/1.3, 1);    // first-load drop-in
+
+  ctx.save();
+  // screen shake at detonation
+  if(flash>0){ const s=flash*6; ctx.translate((Math.sin(t*90)*s)|0,(Math.cos(t*77)*s)|0); }
+
+  // background
+  ctx.fillStyle = "#0a110d"; ctx.fillRect(-10,-10,W+20,H+20);
+
+  // We / They territories, gently pulsing (echoes the story's wall-map)
+  const pulse = 0.12 + 0.05*Math.sin(t*1.6);
+  ctx.fillStyle = `rgba(70,150,90,${pulse})`;     ctx.fillRect(24,96,200,300);
+  ctx.fillStyle = `rgba(170,90,120,${pulse*0.9})`; ctx.fillRect(290,120,200,260);
+  ctx.textAlign = "center"; ctx.font = "bold 22px 'Courier New',monospace";
+  ctx.fillStyle = `rgba(150,220,170,${0.22+0.1*Math.sin(t*1.6)})`;   ctx.fillText("WE",   110, 250);
+  ctx.fillStyle = `rgba(230,160,190,${0.22+0.1*Math.sin(t*1.6+1)})`; ctx.fillText("THEY", 392, 250);
+
+  // critical-mass glow at the convergence point
+  const coreR = 6 + ease*70 + flash*240;
+  const grd = ctx.createRadialGradient(cx,cy,0,cx,cy,coreR);
+  const coreA = Math.min(1, 0.12 + ease*0.5 + flash);
+  grd.addColorStop(0, `rgba(255,${(220-180*ease)|0},${(180-160*ease)|0},${coreA})`);
+  grd.addColorStop(1, "rgba(255,40,30,0)");
+  ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(cx,cy,coreR,0,7); ctx.fill();
+
+  // ten humanoids converging
+  if(lt < flashStart){
+    for(let i=0;i<10;i++){
+      const a = i/10*Math.PI*2 + t*0.18;            // slow swirl
+      const r = (1-ease)*(255 + (i%3)*32);          // edge -> centre
+      const x = cx + Math.cos(a)*r;
+      const y = cy + Math.sin(a)*r*0.82;
+      miniPerson(x, y, 2, (i%2)?"#8df0a0":"#f0a0c0", 0.5+0.5*ease);
+    }
+  }
+
+  // detonation shock ring
+  if(flash>0){
+    ctx.strokeStyle = `rgba(255,210,150,${flash})`; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.arc(cx,cy,(lt-flashStart)*700,0,7); ctx.stroke();
+  }
+
+  // CRT scanlines + moving scan band
+  ctx.fillStyle = "rgba(0,0,0,0.18)";
+  for(let y=0;y<H;y+=3) ctx.fillRect(0,y,W,1);
+  const band = ((t*70)%(H+80))-40;
+  const bandG = ctx.createLinearGradient(0,band-30,0,band+30);
+  bandG.addColorStop(0,"rgba(150,255,180,0)");
+  bandG.addColorStop(.5,"rgba(150,255,180,0.06)");
+  bandG.addColorStop(1,"rgba(150,255,180,0)");
+  ctx.fillStyle = bandG; ctx.fillRect(0,band-30,W,60);
+
+  // title text — glowing, with an occasional flicker
+  const flick = (Math.sin(t*40)+Math.sin(t*13.3)) > 1.9 ? 0.6 : 1;
+  ctx.save();
+  ctx.globalAlpha = intro*flick;
+  ctx.shadowColor = "rgba(120,240,150,0.85)"; ctx.shadowBlur = 18 + 8*Math.sin(t*3);
+  ctx.fillStyle = flash>0.3 ? "#ffd9d0" : "#e6ffe6";
+  ctx.font = "bold 44px 'Courier New',monospace";
+  const ty = 150 - (1-intro)*14;
+  ctx.fillText("LET'S GET", cx, ty);
+  ctx.fillText("TOGETHER", cx, ty+46);
+  ctx.restore();
+
+  // subtitle + premise
+  ctx.shadowBlur = 0; ctx.globalAlpha = intro;
+  ctx.fillStyle = "#9bb6a0"; ctx.font = "14px 'Courier New',monospace";
+  ctx.fillText("a Bitsy-inspired game after Isaac Asimov · 1957", cx, 266);
+  ctx.fillStyle = "#cfe0cf"; ctx.font = "15px 'Courier New',monospace";
+  ctx.fillText("You are Elias Lynn, Chief of the Bureau of Robotics.", cx, 320);
+  ctx.fillText("Ten humanoids walk among Us. Apart, harmless.", cx, 344);
+  ctx.fillStyle = "#e6b4b4";
+  ctx.fillText("Should they ever get together — a city dies.", cx, 368);
+  ctx.globalAlpha = 1;
+
+  // blinking prompt
+  if((t*1.6|0)%2){
+    ctx.fillStyle = "#8df0a0"; ctx.font = "bold 18px 'Courier New',monospace";
+    ctx.fillText("▶ press Z / Space to begin", cx, 436);
+  }
+
+  // white blast overlay
+  if(flash>0){ ctx.fillStyle = `rgba(255,235,210,${flash*0.5})`; ctx.fillRect(-10,-10,W+20,H+20); }
+
+  ctx.textAlign = "left";
+  ctx.restore();
 }
 
 function drawEnding(){
@@ -690,7 +798,7 @@ document.addEventListener("keydown", (e)=>{
   const k = e.key.toLowerCase();
 
   if(S.screen==="title"){
-    if(k==="z"||k===" "||k==="enter"){ S.screen="play"; draw(); e.preventDefault(); }
+    if(k==="z"||k===" "||k==="enter"){ stopTitle(); S.screen="play"; draw(); e.preventDefault(); }
     return;
   }
   if(S.screen==="ending"){
@@ -715,10 +823,7 @@ document.addEventListener("keydown", (e)=>{
   else if(k==="z"||k===" "){ action(); e.preventDefault(); }
 });
 
-/* title blink */
-setInterval(()=>{ if(S.screen==="title") draw(); }, 600);
-
-draw();
+draw();   // boots the animated title loop
 })();
 </script>
 </body>

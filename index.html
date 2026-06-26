@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Let's Get Together — a Bitsy-inspired game</title>
+<style>
+  html,body{
+    margin:0;height:100%;background:#0a0a0c;color:#cfcfd6;
+    font-family:"Courier New",monospace;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    -webkit-font-smoothing:none;image-rendering:pixelated;
+  }
+  #wrap{display:flex;flex-direction:column;align-items:center;gap:10px;}
+  canvas{
+    background:#000;border:4px solid #2a2a33;border-radius:4px;
+    image-rendering:pixelated;image-rendering:crisp-edges;
+    box-shadow:0 0 40px rgba(0,0,0,.8);
+  }
+  #hint{font-size:13px;color:#6a6a78;letter-spacing:1px;text-align:center;max-width:512px;}
+  #hint b{color:#9a9ab0;}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="screen" width="512" height="512"></canvas>
+  <div id="hint">
+    Move: <b>Arrows / WASD</b> &nbsp;·&nbsp; Talk: walk into someone &nbsp;·&nbsp;
+    Scan / Continue: <b>Z</b> or <b>Space</b>
+  </div>
+</div>
+<script>
+"use strict";
+(function(){
+
+/* ============================================================
+   Let's Get Together — a tiny Bitsy-style engine
+   After Isaac Asimov's 1957 public-domain short story.
+   ============================================================ */
+
+const TILE = 8, SCALE = 4, ROOM = 16, PX = TILE*SCALE; // 32px per tile, 512 canvas
+const cv = document.getElementById("screen");
+const ctx = cv.getContext("2d");
+ctx.imageSmoothingEnabled = false;
+
+/* ---------- 8x8 tile bitmaps ('#' = on) ---------- */
+const ART = {
+  wall: [
+    "########",
+    "#.#.#.#.",
+    "########",
+    ".#.#.#.#",
+    "########",
+    "#.#.#.#.",
+    "########",
+    ".#.#.#.#"],
+  desk: [
+    "........",
+    "........",
+    ".######.",
+    ".######.",
+    ".#....#.",
+    ".#....#.",
+    "........",
+    "........"],
+  table: [
+    "........",
+    ".######.",
+    ".######.",
+    ".######.",
+    ".######.",
+    ".######.",
+    "........",
+    "........"],
+  console: [
+    ".######.",
+    ".#....#.",
+    ".#.##.#.",
+    ".#....#.",
+    ".######.",
+    "...##...",
+    "..####..",
+    ".######."],
+  bench: [
+    "........",
+    "..####..",
+    ".######.",
+    "########",
+    "..#..#..",
+    "..#..#..",
+    "........",
+    "........"],
+  map: [
+    "########",
+    "#..##..#",
+    "#.####.#",
+    "#..##..#",
+    "#.#..#.#",
+    "#.####.#",
+    "#......#",
+    "########"],
+  door: [
+    ".######.",
+    ".#....#.",
+    ".#....#.",
+    ".#....#.",
+    ".#...##.",
+    ".#....#.",
+    ".#....#.",
+    ".######."],
+  person: [
+    "..####..",
+    "..#..#..",
+    "..####..",
+    ".######.",
+    "#.####.#",
+    "#.####.#",
+    "..#..#..",
+    ".##..##."],
+};
+
+/* legend: map character -> {art, wall, role} ; role picks palette colour */
+const LEGEND = {
+  '#': {art:'wall',    wall:true,  role:'tile'},
+  'D': {art:'desk',    wall:true,  role:'tile'},
+  'T': {art:'table',   wall:true,  role:'tile'},
+  'C': {art:'console', wall:true,  role:'tile'},
+  'B': {art:'bench',   wall:true,  role:'tile'},
+  'M': {art:'map',     wall:true,  role:'tile'},
+  'E': {art:'door',    wall:false, role:'sprite'},
+  '.': null, ' ': null,
+};
+
+/* ---------- rooms ---------- */
+const rooms = {
+  office: {
+    name:"Bureau of Robotics — Cheyenne",
+    pal:{bg:"#13211a", tile:"#3f7050", sprite:"#d6ecd2"},
+    map:[
+      "#######E########",
+      "#..M........M..#",
+      "#..............#",
+      "#......DD......#",
+      "#......DD......#",
+      "#..............#",
+      "#..............#",
+      "E..............E",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "################"],
+    exits:{
+      "7,0":  {to:"conf",       x:1,  y:7, req:"scannerUnlocked", lock:"The conference hall stands empty. There is no one to find there yet."},
+      "0,7":  {to:"lab",        x:14, y:7},
+      "15,7": {to:"washington", x:1,  y:7, req:"briefed",        lock:"There is no reason to fly to Washington yet."},
+    },
+  },
+  lab: {
+    name:"Robotics Lab — Cheyenne",
+    pal:{bg:"#0f171f", tile:"#2f6070", sprite:"#cfe6f2"},
+    map:[
+      "################",
+      "#...BB...BB....#",
+      "#...BB...BB....#",
+      "#..............#",
+      "#...BB...BB....#",
+      "#...BB...BB....#",
+      "#..............#",
+      "#..............E",
+      "#..............#",
+      "#......CC......#",
+      "#......CC......#",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "################"],
+    exits:{ "15,7": {to:"office", x:1, y:7} },
+  },
+  washington: {
+    name:"Underground Conference — Washington",
+    pal:{bg:"#1b1810", tile:"#5c5340", sprite:"#ece1c8"},
+    map:[
+      "################",
+      "#..............#",
+      "#..............#",
+      "#....TTTTTT....#",
+      "#....TTTTTT....#",
+      "#....TTTTTT....#",
+      "#..............#",
+      "E..............#",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "################"],
+    exits:{ "0,7": {to:"office", x:14, y:7} },
+  },
+  conf: {
+    name:"All-Science Conference — Cheyenne",
+    pal:{bg:"#200f1a", tile:"#74405f", sprite:"#f1d2e4"},
+    map:[
+      "################",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "E..............E",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "################"],
+    exits:{
+      "0,7":  {to:"office",   x:8,  y:1},
+      "15,7": {to:"quarters", x:1,  y:7, req:"detectionDone", lock:"Find every humanoid first. No two may get together."},
+    },
+  },
+  quarters: {
+    name:"Breckenridge's Quarters — Cheyenne",
+    pal:{bg:"#14141b", tile:"#46465c", sprite:"#dadaea"},
+    map:[
+      "################",
+      "#..............#",
+      "#......DD......#",
+      "#......DD......#",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "E..............#",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "#..............#",
+      "################"],
+    exits:{ "0,7": {to:"conf", x:14, y:7} },
+  },
+};
+
+/* ---------- game state ---------- */
+const S = {
+  screen:"title",          // title | play | ending
+  room:"office",
+  px:7, py:10,
+  facing:{x:0,y:-1},
+  flags:{},                // briefed, clue_detection, conference_planned, scannerUnlocked, detectionDone
+  scanned:{},              // sprite-id -> true
+  dialog:null,             // {pages:[...], idx, after}
+  ending:0,
+};
+
+/* ---------- sprites ---------- */
+// kind: 'npc' (story characters) | 'human' | 'humanoid'
+const SCI = [ // conference scientists; ten of the twelve are humanoids
+  {id:"sci_jimenez",  name:"Jiménez",  x:3,  y:3,  humanoid:true },
+  {id:"sci_liebo",    name:"Liebowitz",x:6,  y:3,  humanoid:true },
+  {id:"sci_marin",    name:"Marin",    x:9,  y:3,  humanoid:true },
+  {id:"sci_okafor",   name:"Okafor",   x:12, y:3,  humanoid:true },
+  {id:"sci_petrov",   name:"Petrov",   x:3,  y:6,  humanoid:true },
+  {id:"sci_chen",     name:"Chen",     x:6,  y:6,  humanoid:false},
+  {id:"sci_sato",     name:"Sato",     x:9,  y:6,  humanoid:true },
+  {id:"sci_vance",    name:"Vance",    x:12, y:6,  humanoid:true },
+  {id:"sci_adeyemi",  name:"Adeyemi",  x:3,  y:11, humanoid:true },
+  {id:"sci_haldane",  name:"Haldane",  x:6,  y:11, humanoid:false},
+  {id:"sci_novak",    name:"Novak",    x:9,  y:11, humanoid:true },
+  {id:"sci_ferro",    name:"Ferro",    x:12, y:11, humanoid:true },
+];
+
+function spritesIn(room){
+  if(room === "office"){
+    // Breckenridge is here until martial law is invoked, then he is gone (to set up the hall)
+    if(!S.flags.scannerUnlocked) return [{id:"breck_office", name:"Breckenridge", x:8, y:5, kind:"npc", talk:breckOffice}];
+    return [];
+  }
+  if(room === "lab")
+    return [{id:"laszlo", name:"Laszlo", x:7, y:8, kind:"npc", talk:laszlo}];
+  if(room === "washington")
+    return [
+      {id:"jeffreys",   name:"Jeffreys",   x:8,  y:2, kind:"npc", talk:jeffreys},
+      {id:"amberley",   name:"Amberley",   x:4,  y:4, kind:"npc", talk:amberley},
+      {id:"macalaster", name:"Macalaster", x:11, y:4, kind:"npc", talk:macalaster},
+    ];
+  if(room === "conf")
+    return SCI.map(s => ({
+      id:s.id, name:s.name, x:s.x, y:s.y,
+      kind:s.humanoid ? "humanoid" : "human",
+      talk:()=>set([`DR. ${s.name.toUpperCase()}: A strange conference, Chief. Why call all of us at once?`]),
+    }));
+  if(room === "quarters")
+    return [{id:"breck_quarters", name:"Breckenridge", x:8, y:8, kind:"npc", talk:breckQuarters}];
+  return [];
+}
+
+function spriteAt(room, x, y){
+  return spritesIn(room).find(s => s.x===x && s.y===y) || null;
+}
+
+/* ---------- dialogue helpers ---------- */
+function set(pages, after){ S.dialog = {pages, idx:0, after:after||null}; draw(); }
+function note(line){ // append a system note as an extra page
+  if(S.dialog) S.dialog.pages.push("» " + line);
+}
+
+/* ---------- character dialogue (flag-gated) ---------- */
+function breckOffice(){
+  if(!S.flags.briefed){
+    set([
+      "BRECKENRIDGE: Dr. Lynn. I've come from Washington with news.",
+      "BRECKENRIDGE: There is no doubt about it. They are ahead of us in robotics.",
+      "BRECKENRIDGE: Ten humanoid robots have already entered the United States.",
+      "BRECKENRIDGE: Each carries a fragment of a TC bomb. Apart, harmless.",
+      "BRECKENRIDGE: Should they ever GET TOGETHER, they exceed critical mass — and the city is gone.",
+      "LYNN: ...I don't believe it. (Yet the knife-edge of the words plunged deep.)",
+    ], ()=>{
+      S.flags.briefed = true;
+      note("The Washington jet (east door) is open. The robotics lab lies west.");
+    });
+  } else {
+    set(["BRECKENRIDGE: Speak with Laszlo, sir. Then we fly to Washington together."]);
+  }
+}
+
+function laszlo(){
+  if(!S.flags.briefed){
+    set(["LASZLO: Something wrong, Chief? You look as though you've seen a ghost."]);
+  } else if(!S.flags.clue_detection){
+    set([
+      "LASZLO: They're that far ahead of us? Completely incredible.",
+      "LASZLO: To copy a living mind into a positronic brain, perfectly — impossible.",
+      "LASZLO: The brain small enough to fit a human skull is hundreds of times simpler.",
+      "LASZLO: It cannot catch all the overtones. The copy is never exact.",
+      "LASZLO: If that is so... there MUST be a way to tell a man from a humanoid.",
+      "LYNN: Then that is where we begin. To Washington.",
+    ], ()=>{ S.flags.clue_detection = true; note("Fly to Washington and meet the officials."); });
+  } else if(S.flags.conference_planned && !S.flags.scannerUnlocked){
+    set([
+      "LASZLO: I've five experimental humanoids running the test procedures.",
+      "LASZLO: This Breckenridge — he set up the whole conference. The agenda too.",
+      "LASZLO: 'Let's get together,' he told us, 'and we'll lick Them.'",
+      "LYNN: ...Let's get together.",
+      "LYNN: (His eyes blinked, slowly, twice.) Laszlo — the conference IS the bomb.",
+      "LYNN: Ten of our robotics men went abroad and never came home.",
+      "LYNN: In their place, ten humanoids are converging on Cheyenne. On US.",
+      "LYNN: I invoke martial law over this division. Now. Bring me the scanners.",
+      "LASZLO: ...God help us. The X-ray and the radioactivity monitor. Yes, Chief.",
+    ], ()=>{
+      S.flags.scannerUnlocked = true;
+      note("SCANNER ONLINE. Press Z to scan a person you are facing.");
+      note("The conference hall (north door, in the office) is open.");
+    });
+  } else if(S.flags.scannerUnlocked && !S.flags.detectionDone){
+    set(["LASZLO: Go, Chief. Scan them one by one. No two must ever get together."]);
+  } else if(S.flags.detectionDone){
+    set(["LASZLO: You found them all. But where is the man who sent them?"]);
+  } else {
+    set(["LASZLO: We're crowded and red-taped out of everything, Chief."]);
+  }
+}
+
+function jeffreys(){
+  if(!S.flags.clue_detection){
+    set(["JEFFREYS: Speak with your roboticist first, Dr. Lynn. Then we'll talk."]);
+  } else if(!S.flags.conference_planned){
+    set([
+      "JEFFREYS: Three questions. When do the humanoids meet? Where? How do we stop them?",
+      "JEFFREYS: We'll plant X-ray devices in the arenas, the halls, the churches.",
+      "JEFFREYS: And we will call an all-Science conference at Cheyenne.",
+      "JEFFREYS: One item on the agenda — how to tell a human brain from a positronic one.",
+      "BRECKENRIDGE: Let's get together, and we'll lick Them.",
+      "LYNN: (Something cold turned over in him.) ...I agree to lead it.",
+    ], ()=>{ S.flags.conference_planned = true; note("Return to Cheyenne. Speak with Laszlo in the lab."); });
+  } else {
+    set(["JEFFREYS: Cheyenne is waiting, Dr. Lynn. Go."]);
+  }
+}
+
+function amberley(){
+  if(!S.flags.clue_detection){ set(["AMBERLEY: This is a matter for Robotics, Lynn. Bring me something I can use."]); return; }
+  set([
+    "AMBERLEY: Ten humanoids among two hundred twenty million. A needle in a haystack.",
+    "AMBERLEY: Ordinary measures won't serve. This falls to the Bureau of Robotics — to you.",
+  ]);
+}
+
+function macalaster(){
+  if(!S.flags.clue_detection){ set(["MACALASTER: We are all finitely human, Dr. Lynn. Wait for the briefing."]); return; }
+  set([
+    "MACALASTER: They can copy a specific human — face, memory, the whole personality.",
+    "MACALASTER: Kidnapped at the border; the humanoid sent back in his place.",
+    "MACALASTER: Even friends and family could not tell the difference.",
+  ]);
+}
+
+function breckQuarters(){
+  set([
+    "LYNN: Don't move. I have a blaster. You arranged all of this, Breckenridge.",
+    "LYNN: You brought the news. You named the conference. You set the agenda.",
+    "LYNN: You chose which ten scientists were invited. Did you make sure of them?",
+    "BRECKENRIDGE: Dr. Lynn! This is an outrage—",
+    "LYNN: We'll wait, then. And I'll scan you, like all the rest. (Press Z.)",
+  ]);
+}
+
+/* ---------- scanning ---------- */
+function scan(spr){
+  if(!S.flags.scannerUnlocked){ set(["LYNN: I've no way yet to tell a man from a machine."]); return; }
+
+  if(spr.id === "breck_quarters"){ startEnding(); return; }
+
+  if(spr.kind === "human"){
+    set([`SCAN — DR. ${spr.name.toUpperCase()}: protoplasmic brain, full overtones. Human.`]);
+    S.scanned[spr.id] = true;
+  } else if(spr.kind === "humanoid"){
+    set([`SCAN — DR. ${spr.name.toUpperCase()}: positronic pattern, overtones missing. HUMANOID.`]);
+    S.scanned[spr.id] = true;
+  } else {
+    set([`SCAN — ${spr.name}: reads human. But the scanner was never built for one of Them.`]);
+    return;
+  }
+  checkDetection();
+}
+
+function checkDetection(){
+  if(S.flags.detectionDone) return;
+  const allDone = SCI.every(s => S.scanned[s.id]);
+  if(allDone){
+    S.flags.detectionDone = true;
+    if(S.dialog) note("All scanned. Ten are not men. The quarters door (east) is open — find Breckenridge.");
+  }
+}
+
+/* ---------- ending ---------- */
+const ENDING = [
+  "Lynn fired. The Security man's neck vanished; the torso fell;",
+  "the head dropped, thudded on the floor, and rolled crookedly.",
+  "LASZLO (bursting in): You were right, Chief. They WERE humanoids.",
+  "LASZLO: But they were warned. Each one exploded on the way here.",
+  "Jiménez above the Amazon. Liebowitz in the monorail. Marin, and seven more.",
+  "LYNN: Warned? He sat in that chair the whole time... built-in radio.",
+  "LYNN: The real Breckenridge is still in Moscow. Oh, God — there were ELEVEN.",
+  "Laszlo knelt and touched the fluid trickling from the headless neck.",
+  "Not blood, but high-grade machine oil.",
+  "— THE END —",
+];
+function startEnding(){ S.screen="ending"; S.ending=0; S.dialog=null; draw(); }
+
+/* ============================================================
+   RENDERING
+   ============================================================ */
+function drawBitmap(art, ox, oy, color){
+  ctx.fillStyle = color;
+  for(let r=0;r<8;r++){
+    const row = art[r];
+    for(let c=0;c<8;c++){
+      if(row[c]==='#') ctx.fillRect(ox + c*SCALE, oy + r*SCALE, SCALE, SCALE);
+    }
+  }
+}
+
+function draw(){
+  if(S.screen==="title")   return drawTitle();
+  if(S.screen==="ending")  return drawEnding();
+
+  const room = rooms[S.room];
+  const pal = room.pal;
+  ctx.fillStyle = pal.bg; ctx.fillRect(0,0,512,512);
+
+  // tiles
+  for(let y=0;y<ROOM;y++){
+    for(let x=0;x<ROOM;x++){
+      const ch = room.map[y][x];
+      const def = LEGEND[ch];
+      if(!def) continue;
+      const locked = isLockedDoor(room, x, y);
+      const color = def.role==='sprite'
+        ? (locked ? dim(pal.sprite) : pal.sprite)
+        : pal.tile;
+      drawBitmap(ART[def.art], x*PX, y*PX, color);
+    }
+  }
+
+  // sprites
+  for(const s of spritesIn(S.room)){
+    drawBitmap(ART.person, s.x*PX, s.y*PX, pal.sprite);
+    if(S.scanned[s.id] && s.kind==="humanoid") drawTag(s.x, s.y, "✕", "#ff5a6a");
+    else if(S.scanned[s.id] && s.kind==="human") drawTag(s.x, s.y, "·", pal.sprite);
+  }
+
+  // player (Lynn) — drawn in sprite colour, slightly brighter
+  drawBitmap(ART.person, S.px*PX, S.py*PX, "#ffffff");
+
+  drawHUD(room);
+  if(S.dialog) drawDialog();
+}
+
+function drawTag(tx, ty, mark, color){
+  ctx.font = "bold 16px 'Courier New',monospace";
+  ctx.fillStyle = color;
+  ctx.textAlign = "center";
+  ctx.fillText(mark, tx*PX + PX/2, ty*PX - 2);
+  ctx.textAlign = "left";
+}
+
+function drawHUD(room){
+  ctx.fillStyle = "rgba(0,0,0,.55)";
+  ctx.fillRect(0,0,512,22);
+  ctx.font = "12px 'Courier New',monospace";
+  ctx.fillStyle = "#cfd4dc";
+  ctx.textAlign = "left";
+  ctx.fillText(room.name, 8, 15);
+  ctx.textAlign = "right";
+  if(S.flags.scannerUnlocked){
+    const found = SCI.filter(s=>S.scanned[s.id] && s.humanoid).length;
+    ctx.fillStyle = "#8df0a0";
+    ctx.fillText(`SCANNER ONLINE · humanoids: ${found}/10`, 504, 15);
+  }
+  ctx.textAlign = "left";
+}
+
+function drawDialog(){
+  const x=14, y=372, w=484, h=126;
+  ctx.fillStyle = "rgba(8,8,12,.94)";
+  ctx.fillRect(x,y,w,h);
+  ctx.strokeStyle = "#cfd4dc"; ctx.lineWidth = 2;
+  ctx.strokeRect(x+0.5,y+0.5,w-1,h-1);
+
+  const text = S.dialog.pages[S.dialog.idx];
+  ctx.font = "16px 'Courier New',monospace";
+  ctx.fillStyle = text.startsWith("»") ? "#8df0a0" : "#eef0f4";
+  const lines = wrap(text, w-32);
+  let ty = y+30;
+  for(const ln of lines){ ctx.fillText(ln, x+16, ty); ty += 22; }
+
+  // page indicator
+  ctx.fillStyle = "#6a6a78";
+  ctx.font = "12px 'Courier New',monospace";
+  ctx.textAlign = "right";
+  const more = S.dialog.idx < S.dialog.pages.length-1;
+  ctx.fillText(more ? "▼ Z" : "Z ✓", x+w-12, y+h-10);
+  ctx.textAlign = "left";
+}
+
+function wrap(text, maxW){
+  ctx.font = "16px 'Courier New',monospace";
+  const words = text.split(" ");
+  const lines = []; let cur = "";
+  for(const wd of words){
+    const test = cur ? cur+" "+wd : wd;
+    if(ctx.measureText(test).width > maxW && cur){ lines.push(cur); cur = wd; }
+    else cur = test;
+  }
+  if(cur) lines.push(cur);
+  return lines;
+}
+
+function drawTitle(){
+  ctx.fillStyle = "#0c1410"; ctx.fillRect(0,0,512,512);
+  // faint We/They map motif
+  ctx.fillStyle = "rgba(70,120,80,.18)";  ctx.fillRect(40,120,180,260);
+  ctx.fillStyle = "rgba(150,90,110,.16)"; ctx.fillRect(300,150,150,210);
+
+  ctx.textAlign="center";
+  ctx.fillStyle="#dff0df"; ctx.font="bold 40px 'Courier New',monospace";
+  ctx.fillText("LET'S GET", 256, 210);
+  ctx.fillText("TOGETHER", 256, 256);
+  ctx.fillStyle="#9bb6a0"; ctx.font="15px 'Courier New',monospace";
+  ctx.fillText("a Bitsy-inspired game after Isaac Asimov (1957)", 256, 300);
+  ctx.fillStyle="#cfe0cf"; ctx.font="16px 'Courier New',monospace";
+  ctx.fillText("You are Elias Lynn, Chief of the Bureau of Robotics.", 256, 360);
+  ctx.fillText("Ten humanoids walk among Us. Find them.", 256, 384);
+  ctx.fillStyle = ((Date.now()/600|0)%2) ? "#8df0a0" : "#3a5a44";
+  ctx.font="18px 'Courier New',monospace";
+  ctx.fillText("press Z / Space to begin", 256, 440);
+  ctx.textAlign="left";
+}
+
+function drawEnding(){
+  ctx.fillStyle = "#08080b"; ctx.fillRect(0,0,512,512);
+  ctx.textAlign="center";
+  const page = ENDING[S.ending];
+  const last = S.ending === ENDING.length-1;
+  ctx.fillStyle = last ? "#dff0df" : "#e7e2cf";
+  ctx.font = last ? "bold 30px 'Courier New',monospace" : "17px 'Courier New',monospace";
+  const lines = wrapCenter(page, 440);
+  let ty = 230 - (lines.length-1)*14;
+  for(const ln of lines){ ctx.fillText(ln, 256, ty); ty += 28; }
+
+  ctx.fillStyle="#6a6a78"; ctx.font="13px 'Courier New',monospace";
+  if(last){
+    ctx.fillText("'Let's Get Together' · after Isaac Asimov, 1957", 256, 330);
+    ctx.fillText("press R to replay", 256, 360);
+  } else {
+    ctx.fillText("press Z to continue", 256, 470);
+  }
+  ctx.textAlign="left";
+}
+function wrapCenter(text, maxW){
+  ctx.font = S.ending===ENDING.length-1 ? "bold 30px 'Courier New',monospace" : "17px 'Courier New',monospace";
+  const words = text.split(" "); const lines=[]; let cur="";
+  for(const wd of words){
+    const test = cur?cur+" "+wd:wd;
+    if(ctx.measureText(test).width>maxW && cur){ lines.push(cur); cur=wd; } else cur=test;
+  }
+  if(cur) lines.push(cur);
+  return lines;
+}
+
+/* ---------- helpers ---------- */
+function isWall(room, x, y){
+  if(x<0||y<0||x>=ROOM||y>=ROOM) return true;
+  const def = LEGEND[room.map[y][x]];
+  return !!(def && def.wall);
+}
+function isLockedDoor(room, x, y){
+  const ex = room.exits[x+","+y];
+  return ex && ex.req && !S.flags[ex.req];
+}
+function dim(hex){
+  const n = parseInt(hex.slice(1),16);
+  const r=((n>>16)&255)*0.35|0, g=((n>>8)&255)*0.35|0, b=(n&255)*0.35|0;
+  return `rgb(${r},${g},${b})`;
+}
+
+/* ============================================================
+   INPUT
+   ============================================================ */
+function advanceDialog(){
+  S.dialog.idx++;
+  if(S.dialog.idx >= S.dialog.pages.length){
+    const after = S.dialog.after;
+    S.dialog = null;
+    if(after) after(); // may push a fresh dialog? no — sets flags / notes already consumed
+  }
+  draw();
+}
+
+function move(dx, dy){
+  S.facing = {x:dx, y:dy};
+  const room = rooms[S.room];
+  const nx = S.px+dx, ny = S.py+dy;
+
+  const spr = spriteAt(S.room, nx, ny);
+  if(spr){ if(spr.talk) spr.talk(); return; }       // bump = talk
+  if(isWall(room, nx, ny)) return;
+
+  S.px = nx; S.py = ny;
+
+  const ex = room.exits[nx+","+ny];
+  if(ex){
+    if(ex.req && !S.flags[ex.req]){ set([ex.lock]); return; }
+    enter(ex.to, ex.x, ex.y);
+    return;
+  }
+  draw();
+}
+
+function enter(roomId, x, y){
+  S.room = roomId; S.px = x; S.py = y;
+  draw();
+}
+
+function action(){ // Z / Space
+  const room = rooms[S.room];
+  const fx = S.px + S.facing.x, fy = S.py + S.facing.y;
+  const spr = spriteAt(S.room, fx, fy);
+  if(spr){
+    if(S.flags.scannerUnlocked) scan(spr);
+    else if(spr.talk) spr.talk();
+  } else if(S.flags.scannerUnlocked){
+    set(["LYNN: Nothing here to scan."]);
+  }
+}
+
+document.addEventListener("keydown", (e)=>{
+  const k = e.key.toLowerCase();
+
+  if(S.screen==="title"){
+    if(k==="z"||k===" "||k==="enter"){ S.screen="play"; draw(); e.preventDefault(); }
+    return;
+  }
+  if(S.screen==="ending"){
+    if(k==="z"||k===" "||k==="enter"){
+      if(S.ending < ENDING.length-1){ S.ending++; draw(); }
+    } else if(k==="r"){ location.reload(); }
+    e.preventDefault();
+    return;
+  }
+
+  // play
+  if(S.dialog){
+    if(k==="z"||k===" "||k==="enter"||k.startsWith("arrow")||"wasd".includes(k)){
+      advanceDialog(); e.preventDefault();
+    }
+    return;
+  }
+  if(k==="arrowup"||k==="w"){ move(0,-1); e.preventDefault(); }
+  else if(k==="arrowdown"||k==="s"){ move(0,1); e.preventDefault(); }
+  else if(k==="arrowleft"||k==="a"){ move(-1,0); e.preventDefault(); }
+  else if(k==="arrowright"||k==="d"){ move(1,0); e.preventDefault(); }
+  else if(k==="z"||k===" "){ action(); e.preventDefault(); }
+});
+
+/* title blink */
+setInterval(()=>{ if(S.screen==="title") draw(); }, 600);
+
+draw();
+})();
+</script>
+</body>
+</html>
